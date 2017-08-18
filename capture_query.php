@@ -4,8 +4,8 @@
  * Class Capture_DB_Additions.  Tracks certain kinds of changes to the wordpress database between
  * startpoint and checkpoint.  Checkpoint may be called multiple times; later checkpoints override
  * earlier ones.  The results are accessible via the public fields: `$new_tables` are the names
- * of tables that have been added, and $new_values is a map of
- * tablenames -> inserted keys -> their value at checkpoints
+ * of tables that have been added, and $new_keys is a map of tablenames -> inserted keys.
+ * (TODO: maybe checkpoint entire row value too?)
  *
  * This class only tracks insertions; it will not detect changes to existing rows, or deletions.
  * It also skips tables that have multiple primary keys, for simplicity.  (All WP tables have
@@ -35,9 +35,9 @@ class Capture_DB_Additions {
     public function baseline() {
         $this->base_tables = $this->get_primary_key_columns();
         $this->base_keys = array();
-        foreach( $this->base_tables as $table => $key ) {
-            if ( $key != -1 ) {
-                $this->base_keys[$table] = $this->get_primary_keys($table,$key);
+        foreach( $this->base_tables as $table => $key_column ) {
+            if ( $key_column != -1 ) {
+                $this->base_keys[$table] = $this->get_primary_keys($table,$key_column);
             }
         }
     }
@@ -45,10 +45,19 @@ class Capture_DB_Additions {
     public function checkpoint() {
         global $wpdb;
         // find new tables
-        $base_table_names = array_keys($this->base_tables);
-        $current_table_names = $this->flatten( );
+        $current_table_names = $this->flatten( $wpdb->get_results( "SHOW TABLES", ARRAY_N ));
+        $this->new_tables = array_diff( $current_table_names, array_keys($this->base_tables) );
 
-        // find new values in existing tables
+        // find new rows in existing tables
+        foreach( $this->base_tables as $table => $key_column ) {
+            if ( $key_column != -1 ) {
+                $checkpoint_keys = $this->get_primary_keys( $table, $key_column );
+                $delta =  array_diff( $checkpoint_keys, $this->base_keys[$table] );
+                if ( !empty($delta) ) {
+                    $this->new_keys[$table] = $delta;
+                }
+            }
+        }
     }
 
     /**
@@ -57,22 +66,22 @@ class Capture_DB_Additions {
      */
     public function get_primary_key_columns() {
         global $wpdb;
-        $primary_keys = array();
+        $table_keys = array();
         $results = $wpdb->get_results($wpdb->prepare(
             "SELECT `TABLE_NAME`, `COLUMN_NAME`
             FROM `information_schema`.`COLUMNS`
             WHERE (`TABLE_SCHEMA` = '%s')
               AND (`COLUMN_KEY` = 'PRI');", DB_NAME));
         foreach( $results as $result ) {
-            if ( array_key_exists($primary_keys, $result->TABLE_NAME) ) {
+            if ( array_key_exists($table_keys, $result->TABLE_NAME) ) {
                 // it's got multiple keys, mark it invalid
-                $primary_keys[$result->TABLE_NAME] = -1;
+                $table_keys[$result->TABLE_NAME] = -1;
             }
             else {
-                $primary_keys[$result->TABLE_NAME] = $result->COLUMN_NAME;
+                $table_keys[$result->TABLE_NAME] = $result->COLUMN_NAME;
             }
         }
-        return $primary_keys;
+        return $table_keys;
     }
 
     /**
